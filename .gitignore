@@ -1,0 +1,71 @@
+# ============================
+# Python
+# ============================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checkers
+.mypy_cache/
+.pyre/
+
+# ============================
+# IDEs
+# ============================
+.idea/
+.vscode/
+
+# ============================
+# Environment / secrets
+# ============================
+.env
+.env.*
+.env.local
+.env.*.local
+secrets.env
+
+*.key
+*.pem
+*.cert
+
+# ============================
+# Local runtime artifacts
+# ============================
+logs/
+tmp/
+cache/
+
+# ============================
+# Cloudflare tunnel (local only)
+# ============================
+.cloudflared/
+
+# ============================
+# Allow tracked config templates
+# ============================
+!.env.example
+!config.example.yaml
+!.pre-commit-config.yaml
