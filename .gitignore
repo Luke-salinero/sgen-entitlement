@@ -74,3 +74,19 @@ cache/
 tiers.secret.json
 tiers.*.json
 !tiers.example.json
+
+#Database 
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite*
+*.db-journal
+*.sqlite-journal
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+
+#DB Directory
+data/*
+!data/.gitkeep
