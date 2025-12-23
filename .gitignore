@@ -77,6 +77,7 @@ tiers.*.json
 
 #Database 
 *.db
+*.sql
 *.sqlite
 *.sqlite3
 *.sqlite*
