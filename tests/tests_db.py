@@ -19,7 +19,7 @@ from pathlib import Path
 import app.db.connection as connection_module
 from app.db.connection import get_connection
 
-# ✅ Adjust these imports to your actual module paths
+# Adjust these imports to your actual module paths
 # Example possibilities:
 # from app.db.repo import PlanRepo
 # from app.db.connection import get_connection
