@@ -26,16 +26,23 @@ class PlanWithLimits:
 
 
 @dataclass(frozen=True)
-class UsersWithPlan:
-    # subjects.*
+class SubjectEffectiveEntitlementsRow:
     userID: int
     apiKeyID: int
     accountName: str
-    status: str
-    created_at: str
+    subject_status: str
 
-    # subject_plan.*
     plan_id: int
+    tier: str
+    plan_status: str
+    allow_live: bool
+    plan_description: Optional[str]
+
+    max_n: int
+    max_k: int
+    existential_only: bool
+    rate_limit: int
+    rate_window: int
 
 
 class PlanRepo:
@@ -157,32 +164,146 @@ class PlanRepo:
             limits_updated_at=limits_updated_at,
         )
 
-    def list_activeUsers(self, status: str) -> List[UsersWithPlan]:
+    def list_activeUsers(self, status: str) -> List[SubjectEffectiveEntitlementsRow]:
         """
-        Returns all subjects with their assigned plan_id
-        for the given subject status
-        Returns an empty list if none subjects
+        Returns all subjects (with the given subject status) joined to their
+        effective entitlements (plan + limits, with subject overrides if present).
+        Returns an empty list if none match.
         """
         sql = """
         SELECT
-            s.userID, s.apiKeyID, s.accountName, s.status, s.created_at,
-            sp.plan_id
+        s.userID,
+        s.apiKeyID,
+        s.accountName,
+        s.status AS subject_status,
+
+        p.id AS plan_id,
+        p.tier,
+        p.status AS plan_status,
+        p.allow_live,
+        p.description,
+
+        COALESCE(spl.max_n, pl.max_n) AS max_n,
+        COALESCE(spl.max_k, pl.max_k) AS max_k,
+        COALESCE(spl.existential_only, pl.existential_only) AS existential_only,
+        COALESCE(spl.rate_limit, pl.rate_limit) AS rate_limit,
+        COALESCE(spl.rate_window, pl.rate_window) AS rate_window
+
         FROM subjects s
-        JOIN subject_plan sp
-            ON sp.subject_id = s.userID
+        JOIN subject_plan sp ON sp.subject_id = s.userID
+        JOIN plans p ON p.id = sp.plan_id
+        JOIN plan_limits pl ON pl.plan_id = p.id
+        LEFT JOIN subject_plan_limits spl ON spl.subject_id = s.userID
         WHERE s.status = ?
         """
         cur = self._conn.execute(sql, (status,))
         rows = cur.fetchall()
 
-        return [
-            UsersWithPlan(
-                userID=userID,
-                apiKeyID=apiKeyID,
-                accountName=accountName,
-                status=row_status,
-                created_at=created_at,
-                plan_id=plan_id,
+        out: List[SubjectEffectiveEntitlementsRow] = []
+        for row in rows:
+            (
+                userID,
+                apiKeyID,
+                accountName,
+                subject_status,
+                plan_id,
+                tier,
+                plan_status,
+                allow_live_int,
+                description,
+                max_n,
+                max_k,
+                existential_only_int,
+                rate_limit,
+                rate_window,
+            ) = row
+
+            out.append(
+                SubjectEffectiveEntitlementsRow(
+                    userID=int(userID),
+                    apiKeyID=int(apiKeyID),
+                    accountName=str(accountName),
+                    subject_status=str(subject_status),
+                    plan_id=int(plan_id),
+                    tier=str(tier),
+                    plan_status=str(plan_status),
+                    allow_live=bool(allow_live_int),
+                    plan_description=description,
+                    max_n=int(max_n),
+                    max_k=int(max_k),
+                    existential_only=bool(existential_only_int),
+                    rate_limit=int(rate_limit),
+                    rate_window=int(rate_window),
+                )
             )
-            for (userID, apiKeyID, accountName, row_status, created_at, plan_id) in rows
-        ]
+
+        return out
+
+    def get_subject_effective_entitlements(
+        self, user_id: int
+    ) -> Optional[SubjectEffectiveEntitlementsRow]:
+        sql = """
+        SELECT
+          s.userID,
+          s.apiKeyID,
+          s.accountName,
+          s.status AS subject_status,
+
+          p.id AS plan_id,
+          p.tier,
+          p.status AS plan_status,
+          p.allow_live,
+          p.description,
+
+          COALESCE(spl.max_n, pl.max_n) AS max_n,
+          COALESCE(spl.max_k, pl.max_k) AS max_k,
+          COALESCE(spl.existential_only, pl.existential_only) AS existential_only,
+          COALESCE(spl.rate_limit, pl.rate_limit) AS rate_limit,
+          COALESCE(spl.rate_window, pl.rate_window) AS rate_window
+
+        FROM subjects s
+        JOIN subject_plan sp ON sp.subject_id = s.userID
+        JOIN plans p ON p.id = sp.plan_id
+        JOIN plan_limits pl ON pl.plan_id = p.id
+        LEFT JOIN subject_plan_limits spl ON spl.subject_id = s.userID
+        WHERE s.userID = ?
+        LIMIT 1;
+        """
+        cur = self._conn.execute(sql, (user_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+
+        (
+            userID,
+            apiKeyID,
+            accountName,
+            subject_status,
+            plan_id,
+            tier,
+            plan_status,
+            allow_live_int,
+            description,
+            max_n,
+            max_k,
+            existential_only_int,
+            rate_limit,
+            rate_window,
+        ) = row
+
+        return SubjectEffectiveEntitlementsRow(
+            userID=int(userID),
+            apiKeyID=int(apiKeyID),
+            accountName=str(accountName),
+            subject_status=str(subject_status),
+            plan_id=int(plan_id),
+            tier=str(tier),
+            plan_status=str(plan_status),
+            allow_live=bool(allow_live_int),
+            plan_description=description,
+            max_n=int(max_n),
+            max_k=int(max_k),
+            existential_only=bool(existential_only_int),
+            rate_limit=int(rate_limit),
+            rate_window=int(rate_window),
+        )

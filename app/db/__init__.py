@@ -1,14 +1,17 @@
 """
-Expose the connection factory and repository classes so other parts of the
-application do not import from internal modules directly.
+Database access layer.
 """
 
-from .connection import get_connection
-from .repo import PlanRepo, PlanWithLimits, UsersWithPlan
+from app.db.connection import get_connection
+from app.db.repo import (
+    PlanRepo,
+    PlanWithLimits,
+    SubjectEffectiveEntitlementsRow,
+)
 
 __all__ = [
     "get_connection",
     "PlanRepo",
     "PlanWithLimits",
-    "UsersWithPlan",
+    "SubjectEffectiveEntitlementsRow",
 ]

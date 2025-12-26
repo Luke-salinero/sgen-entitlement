@@ -100,27 +100,6 @@ BEGIN
         END;
 END;
 
-CREATE TRIGGER delete_subject_limits_no_custom
-AFTER UPDATE OF plan_id ON subject_plan
-FOR EACH ROW
-BEGIN
-    DELETE FROM subject_plan_limits
-    WHERE subject_id = NEW.subject_id
-      AND (
-          SELECT tier FROM plans WHERE id = NEW.plan_id
-      ) <> 'custom';
-END;
-
-CREATE TRIGGER delete_subject_limits_no_custom_after_insert
-AFTER INSERT ON subject_plan
-FOR EACH ROW
-BEGIN
-    DELETE FROM subject_plan_limits
-    WHERE subject_id = NEW.subject_id
-      AND (
-          SELECT tier FROM plans WHERE id = NEW.plan_id
-      ) <> 'custom';
-END;
 
 --SELECT
 --  s.userID,

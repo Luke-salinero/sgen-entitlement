@@ -1,14 +1,7 @@
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
-# Maybe we can use python-jose to import jwt
-# claims = jwt.decode(
-#    token,
-#    key=public_key,
-#    algorithms=["RS256"],
-#    audience="your-audience",
-#    issuer="https://your.cloudflare.access/"
-# )
+from jose import jwt
 
 
 @dataclass(frozen=True)
@@ -53,10 +46,14 @@ def _authenticate_bearer(auth_header: str) -> Identity:
     if not token:
         raise InvalidAuthenticationError("Empty bearer token")
 
-    claims = "REPLACE WITH REAL DECODING OF JWT"  # _decode_jwt_without_verification(
-    #  token
-    # )  ##Replace with from jose import jwt?
-
+    # CHANGE ONCE WE KNOW HOW JWT IS FORMATTED
+    claims = jwt.decode(
+        token,
+        key="public_key",
+        algorithms=["RS256"],
+        audience="OURAUDIENCE",
+        issuer="OURISSUER",
+    )
     subject_id = claims.get("sub")
     if not subject_id:
         raise InvalidAuthenticationError("Missing subject in token")
