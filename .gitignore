@@ -54,7 +54,6 @@ secrets.env
 # ============================
 # Local runtime artifacts
 # ============================
-logs/
 tmp/
 cache/
 
