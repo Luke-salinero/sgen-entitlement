@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 
 from jose import jwt
+from jose.exceptions import JWTError
 
 
 @dataclass(frozen=True)
@@ -47,13 +48,17 @@ def _authenticate_bearer(auth_header: str) -> Identity:
         raise InvalidAuthenticationError("Empty bearer token")
 
     # CHANGE ONCE WE KNOW HOW JWT IS FORMATTED
-    claims = jwt.decode(
-        token,
-        key="public_key",
-        algorithms=["RS256"],
-        audience="OURAUDIENCE",
-        issuer="OURISSUER",
-    )
+    try:
+        claims = jwt.decode(
+            token,
+            key="dev-secret",
+            algorithms=["HS256"],
+            audience="OURAUDIENCE",
+            issuer="OURISSUER",
+        )
+    except JWTError as err:
+        raise InvalidAuthenticationError("Invalid bearer token") from err
+
     subject_id = claims.get("sub")
     if not subject_id:
         raise InvalidAuthenticationError("Missing subject in token")

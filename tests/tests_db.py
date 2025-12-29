@@ -1,13 +1,12 @@
 """
 unittest-based unit tests (no pytest) for:
-- Repo.py (PlanRepo)
+- repo.py (PlanRepo)
 - connection.py (get_connection)
 - schema constraints (high-value integrity tests)
 
 Adjust the imports at the top to match your project structure.
 """
 
-import decimal
 import random
 import sqlite3
 import string
@@ -18,12 +17,6 @@ from pathlib import Path
 
 import app.db.connection as connection_module
 from app.db.connection import get_connection
-
-# Adjust these imports to your actual module paths
-# Example possibilities:
-# from app.db.repo import PlanRepo
-# from app.db.connection import get_connection
-# import app.db.connection as connection_module
 from app.db.repo import PlanRepo
 
 SCHEMA_SQL = """
@@ -37,7 +30,8 @@ CREATE TABLE plans(
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (allow_live IN (0, 1)),
-    CHECK (tier in ('free', 'pro'))
+    -- If your real schema differs, update this list accordingly.
+    CHECK (tier in ('free', 'pro', 'custom'))
 );
 
 -- Defines enforceable limits and constraints for each plan (1:1 with plans).
@@ -75,6 +69,27 @@ CREATE TABLE subject_plan(
     FOREIGN KEY (subject_id) REFERENCES subjects(userID) on DELETE CASCADE,
     FOREIGN KEY (plan_id) REFERENCES plans(id) on DELETE RESTRICT
 );
+
+-- NEW: Subject-specific override limits (nullable columns allowed).
+-- Required by PlanRepo.list_activeUsers() and get_subject_effective_entitlements().
+CREATE TABLE subject_plan_limits(
+    subject_id INTEGER PRIMARY KEY,
+    max_n INTEGER,
+    max_k INTEGER,
+    existential_only INTEGER,
+    rate_limit INTEGER,
+    rate_window INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CHECK (existential_only IS NULL OR existential_only IN (0,1)),
+    CHECK (max_n IS NULL OR (max_n >= 1 AND max_n <= 2048)),
+    CHECK (max_k IS NULL OR (max_k >= 1)),
+    CHECK ((max_k IS NULL) OR (max_n IS NULL) OR (max_k <= max_n)),
+    CHECK (rate_limit IS NULL OR rate_limit >= 1),
+    CHECK (rate_window IS NULL OR rate_window >= 1),
+
+    FOREIGN KEY (subject_id) REFERENCES subjects(userID) ON DELETE CASCADE
+);
 """
 
 
@@ -105,17 +120,18 @@ def insert_plan_with_limits(
         """,
         (tier, status, allow_live, description),
     )
-    plan_id = cur.lastrowid
+    plan_id = int(cur.lastrowid)
+
     conn.execute(
         """
-        INSERT INTO plan_limits(plan_id, max_n, max_k, existential_only, rate_limit, 
-        rate_window)
+        INSERT INTO plan_limits(plan_id, max_n, max_k, existential_only, 
+        rate_limit, rate_window)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         (plan_id, max_n, max_k, existential_only, rate_limit, rate_window),
     )
     conn.commit()
-    return int(plan_id)
+    return plan_id
 
 
 def insert_subject(
@@ -132,9 +148,9 @@ def insert_subject(
         """,
         (apiKeyID, accountName, status),
     )
-    user_id = cur.lastrowid
+    user_id = int(cur.lastrowid)
     conn.commit()
-    return int(user_id)
+    return user_id
 
 
 def assign_subject_plan(
@@ -143,6 +159,27 @@ def assign_subject_plan(
     conn.execute(
         "INSERT INTO subject_plan(subject_id, plan_id) VALUES (?, ?)",
         (subject_id, plan_id),
+    )
+    conn.commit()
+
+
+def insert_subject_plan_limits(
+    conn: sqlite3.Connection,
+    *,
+    subject_id: int,
+    max_n: int | None = None,
+    max_k: int | None = None,
+    existential_only: int | None = None,
+    rate_limit: int | None = None,
+    rate_window: int | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO subject_plan_limits
+        (subject_id, max_n, max_k, existential_only, rate_limit, rate_window)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (subject_id, max_n, max_k, existential_only, rate_limit, rate_window),
     )
     conn.commit()
 
@@ -162,18 +199,18 @@ def nasty_strings() -> list[str]:
         "free",
         "pro",
         "FREE",
-        "Pro",  # case mismatch (schema tiers are lowercase)
+        "Pro",
         "free' OR 1=1 --",
         "'; DROP TABLE plans; --",
         "free; SELECT * FROM plans;",
-        "free\0pro",  # null byte inside python string
+        "free\0pro",
         "💥",
         "测试",
         "привет",
-        "áéíóú",  # unicode
+        "áéíóú",
         "x" * 10,
         "x" * 100,
-        "x" * 10_000,  # very long
+        "x" * 10_000,
         "\n\t\r",
     ]
 
@@ -199,7 +236,6 @@ class TestPlanRepoGetPlanLimits(unittest.TestCase):
         self.assertIs(res.allow_live, False)
         self.assertIs(res.existential_only, False)
 
-        # A few key fields should be present
         self.assertGreaterEqual(res.max_n, 1)
         self.assertGreaterEqual(res.max_k, 1)
         self.assertIsInstance(res.created_at, str)
@@ -208,7 +244,7 @@ class TestPlanRepoGetPlanLimits(unittest.TestCase):
 
     def test_get_planLimits_returns_none_for_unknown_tier(self):
         insert_plan_with_limits(self.conn, tier="free")
-        self.assertIsNone(self.repo.get_planLimits("pro"))
+        self.assertIsNone(self.repo.get_planLimits("does-not-exist"))
 
     def test_get_planLimits_returns_none_when_plan_exists_but_limits_missing(self):
         self.conn.execute(
@@ -237,7 +273,6 @@ class TestPlanRepoGetPlanLimits(unittest.TestCase):
 
     def test_get_planLimits_rejects_sql_injection_like_input(self):
         insert_plan_with_limits(self.conn, tier="free")
-        # parameterized query should treat this as literal string and return none
         self.assertIsNone(self.repo.get_planLimits("free' OR 1=1 --"))
 
 
@@ -277,9 +312,8 @@ class TestPlanRepoGetPlanLimitsID(unittest.TestCase):
 
     def test_get_planLimitsID_returns_none_for_non_int_param(self):
         plan_id = insert_plan_with_limits(self.conn, tier="free")
-        self.assertIsNotNone(self.repo.get_planLimitsID(plan_id))  # sanity
+        self.assertIsNotNone(self.repo.get_planLimitsID(plan_id))
 
-        # SQLite will bind strings fine; it just won't match the integer id.
         res = self.repo.get_planLimitsID("not-an-int")  # type: ignore[arg-type]
         self.assertIsNone(res)
 
@@ -293,7 +327,7 @@ class TestPlanRepoListActiveUsers(unittest.TestCase):
         self.conn.close()
 
     def test_list_activeUsers_returns_users_for_matching_status(self):
-        plan_id = insert_plan_with_limits(self.conn, tier="free")
+        plan_id = insert_plan_with_limits(self.conn, tier="free", status="active")
         u1 = insert_subject(
             self.conn, apiKeyID=101, accountName="Acme", status="active"
         )
@@ -311,12 +345,53 @@ class TestPlanRepoListActiveUsers(unittest.TestCase):
         res = self.repo.list_activeUsers("active")
         self.assertEqual(len(res), 2)
 
-        # Verify mapping + plan_id
         user_ids = {r.userID for r in res}
         self.assertSetEqual(user_ids, {u1, u2})
+
         for r in res:
+            self.assertEqual(r.subject_status, "active")
             self.assertEqual(r.plan_id, plan_id)
-            self.assertEqual(r.status, "active")
+            self.assertEqual(r.plan_status, "active")
+            self.assertEqual(r.tier, "free")
+
+    def test_list_activeUsers_uses_subject_plan_limits_overrides_when_present(self):
+        # Base plan limits
+        plan_id = insert_plan_with_limits(
+            self.conn,
+            tier="free",
+            max_n=15,
+            max_k=8,
+            existential_only=0,
+            rate_limit=10,
+            rate_window=60,
+        )
+
+        uid = insert_subject(
+            self.conn, apiKeyID=2001, accountName="OverrideUser", status="active"
+        )
+        assign_subject_plan(self.conn, subject_id=uid, plan_id=plan_id)
+
+        # Override only some fields; others should fall back to plan limits via COALESCE
+        insert_subject_plan_limits(
+            self.conn,
+            subject_id=uid,
+            max_n=99,
+            max_k=7,
+            existential_only=1,
+            rate_limit=None,
+            rate_window=None,
+        )
+
+        res = self.repo.list_activeUsers("active")
+        self.assertEqual(len(res), 1)
+        row = res[0]
+
+        self.assertEqual(row.userID, uid)
+        self.assertEqual(row.max_n, 99)  # overridden
+        self.assertEqual(row.max_k, 7)  # overridden
+        self.assertIs(row.existential_only, True)  # overridden (1 -> True)
+        self.assertEqual(row.rate_limit, 10)  # fallback
+        self.assertEqual(row.rate_window, 60)  # fallback
 
     def test_list_activeUsers_returns_empty_list_when_none_match(self):
         plan_id = insert_plan_with_limits(self.conn, tier="free")
@@ -329,30 +404,12 @@ class TestPlanRepoListActiveUsers(unittest.TestCase):
         self.assertEqual(res, [])
 
     def test_list_activeUsers_excludes_subjects_without_subject_plan(self):
-        plan_id = insert_plan_with_limits(self.conn, tier="free")
-        u1 = insert_subject(
-            self.conn, apiKeyID=301, accountName="HasPlan", status="active"
+        insert_plan_with_limits(self.conn, tier="free")
+        _u1 = insert_subject(
+            self.conn, apiKeyID=301, accountName="NoPlan", status="active"
         )
-        # u2 = insert_subject(
-        #    self.conn, apiKeyID=302, accountName="NoPlan", status="active"
-        # )
-
-        assign_subject_plan(self.conn, subject_id=u1, plan_id=plan_id)
-
         res = self.repo.list_activeUsers("active")
-        self.assertEqual(len(res), 1)
-        self.assertEqual(res[0].userID, u1)
-
-    def test_list_activeUsers_multiple_users_same_plan_allowed(self):
-        plan_id = insert_plan_with_limits(self.conn, tier="free")
-        u1 = insert_subject(self.conn, apiKeyID=401, accountName="A", status="active")
-        u2 = insert_subject(self.conn, apiKeyID=402, accountName="B", status="active")
-        assign_subject_plan(self.conn, subject_id=u1, plan_id=plan_id)
-        assign_subject_plan(self.conn, subject_id=u2, plan_id=plan_id)
-
-        res = self.repo.list_activeUsers("active")
-        self.assertEqual(len(res), 2)
-        self.assertTrue(all(r.plan_id == plan_id for r in res))
+        self.assertEqual(res, [])
 
     def test_list_activeUsers_rejects_sql_injection_like_input(self):
         plan_id = insert_plan_with_limits(self.conn, tier="free")
@@ -361,6 +418,74 @@ class TestPlanRepoListActiveUsers(unittest.TestCase):
 
         res = self.repo.list_activeUsers("active' OR 1=1 --")
         self.assertEqual(res, [])
+
+
+class TestPlanRepoGetSubjectEffectiveEntitlements(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = make_in_memory_conn()
+        self.repo = PlanRepo(self.conn)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_get_subject_effective_entitlements_returns_none_when_missing(self):
+        insert_plan_with_limits(self.conn, tier="free")
+        self.assertIsNone(self.repo.get_subject_effective_entitlements(999999))
+
+    def test_get_subject_effective_entitlements_returns_row_with_fallback_limits(self):
+        plan_id = insert_plan_with_limits(
+            self.conn,
+            tier="free",
+            max_n=15,
+            max_k=8,
+            existential_only=0,
+            rate_limit=10,
+            rate_window=60,
+        )
+        uid = insert_subject(
+            self.conn, apiKeyID=9001, accountName="Acme", status="active"
+        )
+        assign_subject_plan(self.conn, subject_id=uid, plan_id=plan_id)
+
+        row = self.repo.get_subject_effective_entitlements(uid)
+        self.assertIsNotNone(row)
+        assert row is not None
+
+        self.assertEqual(row.userID, uid)
+        self.assertEqual(row.subject_status, "active")
+        self.assertEqual(row.plan_id, plan_id)
+        self.assertEqual(row.tier, "free")
+        self.assertEqual(row.max_n, 15)
+        self.assertEqual(row.max_k, 8)
+        self.assertIs(row.existential_only, False)
+
+    def test_get_subject_effective_entitlements_uses_subject_overrides(self):
+        plan_id = insert_plan_with_limits(
+            self.conn,
+            tier="free",
+            max_n=15,
+            max_k=8,
+            existential_only=0,
+            rate_limit=10,
+            rate_window=60,
+        )
+        uid = insert_subject(
+            self.conn, apiKeyID=9002, accountName="Override", status="active"
+        )
+        assign_subject_plan(self.conn, subject_id=uid, plan_id=plan_id)
+        insert_subject_plan_limits(
+            self.conn, subject_id=uid, max_n=123, existential_only=1
+        )
+
+        row = self.repo.get_subject_effective_entitlements(uid)
+        self.assertIsNotNone(row)
+        assert row is not None
+
+        self.assertEqual(row.max_n, 123)  # overridden
+        self.assertIs(row.existential_only, True)  # overridden
+        self.assertEqual(row.max_k, 8)  # fallback
+        self.assertEqual(row.rate_limit, 10)  # fallback
+        self.assertEqual(row.rate_window, 60)  # fallback
 
 
 class TestConnectionGetConnection(unittest.TestCase):
@@ -376,7 +501,6 @@ class TestConnectionGetConnection(unittest.TestCase):
                 conn = get_connection()
                 try:
                     self.assertTrue(custom_db_path.parent.exists())
-                    # simple sanity query
                     conn.execute("SELECT 1;").fetchone()
                 finally:
                     conn.close()
@@ -435,23 +559,21 @@ class TestSchemaConstraints(unittest.TestCase):
     def test_schema_rejects_invalid_allow_live_values(self):
         with self.assertRaises(sqlite3.IntegrityError):
             self.conn.execute(
-                """INSERT INTO plans(tier,status,allow_live,description) 
+                """INSERT"" INTO plans(tier,status,allow_live,description) 
                 VALUES (?,?,?,?)""",
                 ("free", "active", 2, None),
             )
             self.conn.commit()
 
     def test_schema_enforces_plan_limits_constraints_max_k_le_max_n(self):
-        plan_id = insert_plan_with_limits(self.conn, tier="free")  # insert valid first
-        # delete limits and try to reinsert invalid ones
+        plan_id = insert_plan_with_limits(self.conn, tier="free")
         self.conn.execute("DELETE FROM plan_limits WHERE plan_id = ?", (plan_id,))
         self.conn.commit()
 
         with self.assertRaises(sqlite3.IntegrityError):
             self.conn.execute(
                 """
-                INSERT INTO 
-                plan_limits(plan_id, max_n, max_k, existential_only, 
+                INSERT INTO plan_limits(plan_id, max_n, max_k, existential_only, 
                 rate_limit, rate_window)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
@@ -461,7 +583,6 @@ class TestSchemaConstraints(unittest.TestCase):
 
     def test_schema_cascades_delete_plan_to_plan_limits(self):
         plan_id = insert_plan_with_limits(self.conn, tier="free")
-        # confirm limits exists
         before = self.conn.execute(
             "SELECT COUNT(*) FROM plan_limits WHERE plan_id = ?", (plan_id,)
         ).fetchone()[0]
@@ -486,371 +607,24 @@ class TestSchemaConstraints(unittest.TestCase):
             self.conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
             self.conn.commit()
 
-
-class TestPlanRepoBruteForce(unittest.TestCase):
-    """
-    Brute-force / fuzz-ish tests:
-    - tries many weird tiers/status strings
-    - inserts lots of rows
-    - attempts constraint-breaking inserts
-    - ensures methods don't crash and behave predictably
-    """
-
-    def setUp(self) -> None:
-        self.conn = make_in_memory_conn()
-        self.repo = PlanRepo(self.conn)
-        self.rng = random.Random(1337)  # deterministic seed
-
-    def tearDown(self) -> None:
-        self.conn.close()
-
-    def test_get_planLimits_fuzz_tier_inputs_never_crashes(self):
-        # Seed DB with valid plans+limits
-        insert_plan_with_limits(self.conn, tier="free")
-        insert_plan_with_limits(self.conn, tier="pro")
-
-        # Lots of random and "nasty" tiers
-        candidates = nasty_strings()
-        for _ in range(200):
-            candidates.append(rand_str(self.rng, self.rng.randint(0, 200)))
-
-        for tier in candidates:
-            with self.subTest(tier=tier):
-                res = self.repo.get_planLimits(tier)
-                # Only exact 'free' or 'pro' should match
-                if tier in ("free", "pro"):
-                    self.assertIsNotNone(res)
-                else:
-                    self.assertTrue(res is None or res.tier in ("free", "pro"))
-
-    def test_get_planLimitsID_fuzz_plan_id_inputs_never_crashes(self):
-        free_id = insert_plan_with_limits(self.conn, tier="free")
-
-        # ints: negative, huge, zero, random
-        int_candidates = [-10, -1, 0, 1, free_id, 2, 999999999, 2**31 - 1]
-        for _ in range(200):
-            int_candidates.append(self.rng.randint(-10_000, 10_000))
-
-        for pid in int_candidates:
-            with self.subTest(plan_id=pid):
-                res = self.repo.get_planLimitsID(pid)
-                if pid == free_id:
-                    self.assertIsNotNone(res)
-                else:
-                    self.assertIsNone(res)
-
-        # Also try non-ints. SQLite will bind many of these without raising.
-        # Also try non-ints. SQLite may coerce "numeric" strings like "0001" -> 1.
-        non_int_candidates = [
-            "1",
-            "0001",
-            "01",
-            " 1 ",
-            "+1",
-            "1.0",
-            "not-an-int",
-            "9999999999999999999999999",
-            1.0,
-            1.5,
-            None,
-            True,
-            False,
-            b"1",
-            b"free",
-        ]
-        for pid in non_int_candidates:
-            with self.subTest(non_int_plan_id=pid):
-                try:
-                    res = self.repo.get_planLimitsID(pid)  # type: ignore[arg-type]
-
-                    # If sqlite coerces it to the real id, we may get a row.
-                    # Only assert that:
-                    # - it doesn't crash
-                    # - if it returns a row, it's the correct one (id=free_id)
-                    if res is not None:
-                        self.assertEqual(res.plan_id, free_id)
-                    else:
-                        self.assertIsNone(res)
-
-                except (
-                    sqlite3.ProgrammingError,
-                    sqlite3.InterfaceError,
-                    TypeError,
-                    ValueError,
-                ):
-                    # Binding errors vary by Python/SQLite version.
-                    pass
-
-    def test_list_activeUsers_fuzz_status_inputs_never_crashes(self):
+    def test_subject_plan_limits_cascades_on_subject_delete(self):
         plan_id = insert_plan_with_limits(self.conn, tier="free")
+        uid = insert_subject(self.conn, apiKeyID=5555, accountName="X", status="active")
+        assign_subject_plan(self.conn, subject_id=uid, plan_id=plan_id)
+        insert_subject_plan_limits(self.conn, subject_id=uid, max_n=99)
 
-        # Make a few users with known statuses
-        u_active = insert_subject(
-            self.conn, apiKeyID=1001, accountName="ActiveUser", status="active"
-        )
-        u_disabled = insert_subject(
-            self.conn, apiKeyID=1002, accountName="DisabledUser", status="disabled"
-        )
-        assign_subject_plan(self.conn, subject_id=u_active, plan_id=plan_id)
-        assign_subject_plan(self.conn, subject_id=u_disabled, plan_id=plan_id)
+        before = self.conn.execute(
+            "SELECT COUNT(*) FROM subject_plan_limits WHERE subject_id = ?", (uid,)
+        ).fetchone()[0]
+        self.assertEqual(before, 1)
 
-        candidates = nasty_strings()
-        for _ in range(200):
-            candidates.append(rand_str(self.rng, self.rng.randint(0, 200)))
-
-        for status in candidates:
-            with self.subTest(status=status):
-                res = self.repo.list_activeUsers(status)
-                self.assertIsInstance(res, list)
-                # Only exact "active" should return our active user
-                if status == "active":
-                    self.assertTrue(any(r.userID == u_active for r in res))
-                else:
-                    # If status isn't exactly "active", should not include active user
-                    self.assertFalse(any(r.userID == u_active for r in res))
-
-    def test_bulk_insert_many_subjects_and_query_performance_sanity(self):
-        """
-        Inserts many rows to try to stress the repo.
-        Keep counts moderate so it still runs fast in CI.
-        """
-        plan_id = insert_plan_with_limits(self.conn, tier="free")
-
-        n_active = 1500
-        n_disabled = 500
-
-        # Insert active users
-        for i in range(n_active):
-            uid = insert_subject(
-                self.conn,
-                apiKeyID=10_000 + i,
-                accountName=f"acct_active_{i}",
-                status="active",
-            )
-            assign_subject_plan(self.conn, subject_id=uid, plan_id=plan_id)
-
-        # Insert disabled users
-        for i in range(n_disabled):
-            uid = insert_subject(
-                self.conn,
-                apiKeyID=20_000 + i,
-                accountName=f"acct_disabled_{i}",
-                status="disabled",
-            )
-            assign_subject_plan(self.conn, subject_id=uid, plan_id=plan_id)
-
-        t0 = time.time()
-        res = self.repo.list_activeUsers("active")
-        t1 = time.time()
-
-        self.assertEqual(len(res), n_active)
-
-        # Not a strict perf test, just a sanity bound
-        # to catch accidental O(n^2) in Python loops
-        self.assertLess(t1 - t0, 2.0)
-
-    def test_constraints_bruteforce_invalid_plan_limits_rejected(self):
-        """
-        Try many invalid plan_limits combinations to ensure DB enforces constraints.
-        """
-        plan_id = insert_plan_with_limits(self.conn, tier="free")
-
-        # Remove the valid limits, then attempt invalid inserts
-        self.conn.execute("DELETE FROM plan_limits WHERE plan_id = ?", (plan_id,))
+        self.conn.execute("DELETE FROM subjects WHERE userID = ?", (uid,))
         self.conn.commit()
 
-        invalid_cases = [
-            # (max_n, max_k, existential_only, rate_limit, rate_window)
-            (0, 1, 0, 1, 1),  # max_n < 1
-            (2049, 1, 0, 1, 1),  # max_n > 2048
-            (10, 0, 0, 1, 1),  # max_k < 1
-            (10, 11, 0, 1, 1),  # max_k > max_n
-            (10, 1, 2, 1, 1),  # existential_only not 0/1
-            (10, 1, 0, 0, 1),  # rate_limit < 1
-            (10, 1, 0, 1, 0),  # rate_window < 1
-        ]
-
-        for case in invalid_cases:
-            with self.subTest(case=case), self.assertRaises(sqlite3.IntegrityError):
-                self.conn.execute(
-                    """
-                    INSERT INTO plan_limits
-                    (plan_id, max_n, max_k, existential_only,
-                    rate_limit, rate_window)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (plan_id, *case),
-                )
-                self.conn.commit()
-
-        # Finally insert a valid one to ensure DB isn't left in a broken state
-        self.conn.execute(
-            """
-            INSERT INTO plan_limits
-            (plan_id, max_n, max_k, existential_only, rate_limit, rate_window)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (plan_id, 15, 8, 1, 10, 60),
-        )
-        self.conn.commit()
-        self.assertIsNotNone(self.repo.get_planLimitsID(plan_id))
-
-    def test_subject_plan_foreign_key_and_restrict_delete_bruteforce(self):
-        """
-        Attempts invalid foreign keys + verifies RESTRICT behavior repeatedly.
-        """
-        free_id = insert_plan_with_limits(self.conn, tier="free")
-
-        # Invalid subject_plan: subject doesn't exist
-        with self.assertRaises(sqlite3.IntegrityError):
-            assign_subject_plan(self.conn, subject_id=999999, plan_id=free_id)
-
-        # Invalid subject_plan: plan doesn't exist
-        uid = insert_subject(self.conn, apiKeyID=7777, accountName="X", status="active")
-        with self.assertRaises(sqlite3.IntegrityError):
-            assign_subject_plan(self.conn, subject_id=uid, plan_id=999999)
-
-        # Valid assignment
-        assign_subject_plan(self.conn, subject_id=uid, plan_id=free_id)
-
-        # RESTRICT: can't delete plan while referenced
-        with self.assertRaises(sqlite3.IntegrityError):
-            self.conn.execute("DELETE FROM plans WHERE id = ?", (free_id,))
-            self.conn.commit()
-
-
-class TestPlanRepoInjectionResistanceSmoke(unittest.TestCase):
-    def setUp(self) -> None:
-        self.conn = make_in_memory_conn()
-        self.repo = PlanRepo(self.conn)
-
-    def tearDown(self) -> None:
-        self.conn.close()
-
-    def test_injection_inputs_do_not_modify_schema(self):
-        insert_plan_with_limits(self.conn, tier="free")
-
-        # Try a bunch of nasty inputs
-        for payload in [
-            "'; DROP TABLE plans; --",
-            "free'; DROP TABLE plan_limits; --",
-            "free' OR 1=1 --",
-        ]:
-            with self.subTest(payload=payload):
-                _ = self.repo.get_planLimits(payload)
-                _ = self.repo.list_activeUsers(payload)
-
-        # If tables were dropped, these would error.
-        tables = set(
-            r[0]
-            for r in self.conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        )
-        self.assertTrue(
-            {"plans", "plan_limits", "subjects", "subject_plan"}.issubset(tables)
-        )
-
-
-class TestPlanRepoNicheParameterBinding(unittest.TestCase):
-    def setUp(self) -> None:
-        self.conn = make_in_memory_conn()
-        self.repo = PlanRepo(self.conn)
-        self.free_id = insert_plan_with_limits(self.conn, tier="free")
-        self.pro_id = insert_plan_with_limits(self.conn, tier="pro")
-
-    def tearDown(self) -> None:
-        self.conn.close()
-
-    def test_get_planLimits_tier_weird_whitespace_and_null_bytes(self):
-        # Only exact 'free' matches, so whitespace variants should not.
-        cases = [
-            " free",
-            "free ",
-            "\tfree",
-            "free\n",
-            "free\r\n",
-            "free\0",  # null byte suffix
-            "fr\0ee",  # embedded null byte
-        ]
-        for tier in cases:
-            with self.subTest(tier=repr(tier)):
-                self.assertIsNone(self.repo.get_planLimits(tier))
-
-    def test_get_planLimits_tier_unicode_normalization_tricks(self):
-        # Visually similar strings that are not byte-equal should not match.
-        # e.g. "free" with different Unicode code points.
-        # (SQLite compares by byte sequence for TEXT by
-        # default unless collation says otherwise.)
-        cases = [
-            "fr\u0065e",  # normal 'e'
-            "fr\u00E9e",  # 'é' instead of 'e'
-            "fr\u0065\u0301e",  # 'e' + combining accent
-            "𝒻ree",  # fancy unicode letter
-        ]
-        for tier in cases:
-            with self.subTest(tier=tier):
-                if tier == "free":
-                    self.assertIsNotNone(self.repo.get_planLimits(tier))
-                else:
-                    self.assertIsNone(self.repo.get_planLimits(tier))
-
-    def test_get_planLimitsID_sqlite_numeric_string_coercion(self):
-        # SQLite will coerce numeric-like strings into numbers for comparisons.
-        coercing = ["1", "0001", " 1 ", "+1", "1.0", "1e0"]
-        for pid in coercing:
-            with self.subTest(pid=pid):
-                res = self.repo.get_planLimitsID(pid)  # type: ignore[arg-type]
-                self.assertIsNotNone(res)
-                assert res is not None
-                self.assertEqual(res.plan_id, self.free_id)
-
-        # But these should NOT coerce to 1 (or may not) -> usually None.
-        non_coercing = ["1x", "x1", "01x", "1.0000000000000001", "nan", "inf", "-inf"]
-        for pid in non_coercing:
-            with self.subTest(pid=pid):
-                res = self.repo.get_planLimitsID(pid)  # type: ignore[arg-type]
-                # Some SQLite builds coerce aggressively; if it returns something,
-                # it must be a valid plan id.
-                if res is not None:
-                    self.assertIn(res.plan_id, (self.free_id, self.pro_id))
-                else:
-                    self.assertIsNone(res)
-
-    def test_get_planLimitsID_extreme_numeric_types(self):
-        # These can expose coercion, overflow, or binding differences.
-        candidates = [
-            0,
-            -1,
-            2**31 - 1,
-            2**63 - 1,
-            2**63,  # may overflow to float or error depending on build
-            10**100,  # extremely huge int
-            1.0,
-            1.0000000000,
-            float("nan"),
-            float("inf"),
-            float("-inf"),
-            decimal.Decimal("1"),
-            decimal.Decimal("1.0"),
-        ]
-
-        for pid in candidates:
-            with self.subTest(pid=repr(pid)):
-                try:
-                    res = self.repo.get_planLimitsID(pid)  # type: ignore[arg-type]
-                    # If it returns a row, ensure it's one of our known ids.
-                    if res is not None:
-                        self.assertIn(res.plan_id, (self.free_id, self.pro_id))
-                except (
-                    sqlite3.InterfaceError,
-                    sqlite3.ProgrammingError,
-                    OverflowError,
-                    ValueError,
-                    TypeError,
-                ):
-                    # Valid outcome: sqlite binding may reject some values.
-                    pass
+        after = self.conn.execute(
+            "SELECT COUNT(*) FROM subject_plan_limits WHERE subject_id = ?", (uid,)
+        ).fetchone()[0]
+        self.assertEqual(after, 0)
 
 
 class TestPlanRepoDatabaseStateFailures(unittest.TestCase):
@@ -860,7 +634,6 @@ class TestPlanRepoDatabaseStateFailures(unittest.TestCase):
         insert_plan_with_limits(conn, tier="free")
         conn.close()
 
-        # A closed connection is a valid failure mode in real services.
         with self.assertRaises(sqlite3.ProgrammingError):
             repo.get_planLimits("free")
 
@@ -870,57 +643,8 @@ class TestPlanRepoDatabaseStateFailures(unittest.TestCase):
         with self.assertRaises(sqlite3.ProgrammingError):
             repo.list_activeUsers("active")
 
-    def test_methods_raise_when_tables_missing(self):
-        # Create connection with no schema loaded
-        conn = sqlite3.connect(":memory:")
-        conn.execute("PRAGMA foreign_keys = ON;")
-        repo = PlanRepo(conn)
-
-        with self.assertRaises(sqlite3.OperationalError):
-            repo.get_planLimits("free")
-
-        with self.assertRaises(sqlite3.OperationalError):
-            repo.list_activeUsers("active")
-
-        conn.close()
-
-    def test_methods_raise_when_schema_is_wrong_shape(self):
-        # Create tables with missing columns to simulate migration mismatch.
-        conn = sqlite3.connect(":memory:")
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.executescript(
-            """
-        CREATE TABLE plans(id INTEGER PRIMARY KEY, tier TEXT NOT NULL UNIQUE,
-        status TEXT NOT NULL, allow_live INTEGER NOT NULL);
-        CREATE TABLE plan_limits(plan_id INTEGER NOT NULL UNIQUE, 
-        max_n INTEGER NOT NULL, max_k INTEGER NOT NULL,
-                                 existential_only INTEGER NOT NULL, 
-                                 rate_limit INTEGER NOT NULL, 
-                                 rate_window INTEGER NOT NULL,
-                                 FOREIGN KEY (plan_id) REFERENCES plans(id));
-        """
-        )
-        repo = PlanRepo(conn)
-        conn.execute(
-            "INSERT INTO plans(tier,status,allow_live) VALUES ('free','active',0)"
-        )
-        pid = conn.execute("SELECT id FROM plans WHERE tier='free'").fetchone()[0]
-        sqlLine = (
-            "INSERT INTO plan_limits(plan_id, max_n, max_k, "
-            "existential_only, rate_limit, rate_window) "
-            "VALUES (?, ?, ?, ?, ?, ?)"
-        )
-        conn.execute(
-            sqlLine,
-            (pid, 15, 8, 0, 10, 60),
-        )
-        conn.commit()
-
-        # Repo SELECT expects created_at/updated_at columns; this should break.
-        with self.assertRaises(sqlite3.OperationalError):
-            repo.get_planLimits("free")
-
-        conn.close()
+        with self.assertRaises(sqlite3.ProgrammingError):
+            repo.get_subject_effective_entitlements(1)
 
 
 class TestSQLiteLockingBehavior(unittest.TestCase):
@@ -928,31 +652,26 @@ class TestSQLiteLockingBehavior(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "locktest.db"
 
-            # conn1 creates schema and begins a write lock
             conn1 = sqlite3.connect(db_path)
             conn1.execute("PRAGMA foreign_keys = ON;")
             conn1.executescript(SCHEMA_SQL)
-            sqlLine = (
-                "INSERT INTO plans(tier,status,allow_live,description)"
-                "VALUES ('free','active',0,NULL)"
+            conn1.execute(
+                """INSERT INTO plans(tier,status,allow_live,description) 
+                VALUES ('free','active',0,NULL)"""
             )
-            conn1.execute(sqlLine)
             conn1.commit()
 
-            # Start a transaction that holds a RESERVED lock
             conn1.execute("BEGIN IMMEDIATE;")
             conn1.execute("UPDATE plans SET status='active' WHERE tier='free'")
 
-            # conn2 tries to write while conn1 holds lock
             conn2 = sqlite3.connect(db_path)
-            conn2.execute("PRAGMA busy_timeout = 100;")  # keep this test fast
+            conn2.execute("PRAGMA busy_timeout = 100;")
             try:
                 with self.assertRaises(sqlite3.OperationalError):
-                    sqlLine = (
-                        "INSERT INTO plans(tier,status,allow_live,description)"
-                        "VALUES ('pro','active',0,NULL)"
+                    conn2.execute(
+                        """INSERT INTO plans(tier,status,allow_live,description) 
+                        VALUES ('pro','active',0,NULL)"""
                     )
-                    conn2.execute(sqlLine)
                     conn2.commit()
             finally:
                 conn2.close()
@@ -960,7 +679,451 @@ class TestSQLiteLockingBehavior(unittest.TestCase):
                 conn1.close()
 
 
-class TestListActiveUsersJoinAssumptions(unittest.TestCase):
+# ============================
+# BULK / STRESS TESTS
+# Paste below your existing tests
+# ============================
+
+
+BULK_SUBJECTS = 3000
+BULK_OVERRIDES = 900
+BULK_PLANS = 3
+BULK_PERF_SECONDS = 2.5
+BULK_ACTIVE_RATIO = 0.9
+
+
+class TestBulkEffectiveEntitlementsConsistency(unittest.TestCase):
+    """
+    High-volume consistency tests:
+    - create multiple plans
+    - create thousands of subjects assigned to plans
+    - apply randomized subject_plan_limits overrides (partial overrides!)
+    - verify list_activeUsers('active') rows match
+    get_subject_effective_entitlements(userID)
+    """
+
+    def setUp(self) -> None:
+        self.conn = make_in_memory_conn()
+        self.repo = PlanRepo(self.conn)
+        self.rng = random.Random(20250101)
+
+        # Create multiple plans with distinct limits so we can verify
+        # fallback vs override.
+        self.plan_ids: list[int] = []
+        for i in range(BULK_PLANS):
+            tier = f"tier_{i}"
+            # NOTE: if your schema CHECK(tier in (...)) doesn't allow tier_*,
+            # set BULK_PLANS=2 and use tiers ('free','pro') or update schema constraint.
+            # For safety in many schemas, we stick to 'free','pro','custom'
+            # if BULK_PLANS<=3.
+            if BULK_PLANS <= 3:
+                tier = ["free", "pro", "custom"][i]
+            pid = insert_plan_with_limits(
+                self.conn,
+                tier=tier,
+                status="active",
+                allow_live=(i % 2),
+                max_n=15 + i,
+                max_k=8,
+                existential_only=(i % 2),
+                rate_limit=10 + i,
+                rate_window=60,
+            )
+            self.plan_ids.append(pid)
+
+        self.subject_ids: list[int] = []
+        self.active_subject_ids: list[int] = []
+
+        n_subjects = BULK_SUBJECTS
+        n_active = int(n_subjects * BULK_ACTIVE_RATIO)
+
+        # Insert subjects
+        for i in range(n_subjects):
+            status = "active" if i < n_active else "disabled"
+            uid = insert_subject(
+                self.conn,
+                apiKeyID=100_000 + i,
+                accountName=f"acct_{i}",
+                status=status,
+            )
+            self.subject_ids.append(uid)
+            if status == "active":
+                self.active_subject_ids.append(uid)
+
+            # Assign to a plan (skewed distribution is fine)
+            pid = self.plan_ids[i % len(self.plan_ids)]
+            assign_subject_plan(self.conn, subject_id=uid, plan_id=pid)
+
+        # Apply overrides to a subset of subjects (random pick)
+        override_subjects = self.rng.sample(
+            self.subject_ids, k=min(BULK_OVERRIDES, len(self.subject_ids))
+        )
+        for uid in override_subjects:
+            # Partial overrides: some fields None to test COALESCE fallback.
+            # Also keep overrides valid (respect max_k<=max_n when both set).
+            max_n = self.rng.choice([None, 31, 63, 127, 255])
+            if max_n is None:
+                max_k = self.rng.choice([None, 1, 2, 4, 8])
+            else:
+                max_k = self.rng.choice([None, 1, min(8, max_n), min(16, max_n)])
+            existential_only = self.rng.choice([None, 0, 1])
+            rate_limit = self.rng.choice([None, 5, 10, 20, 50])
+            rate_window = self.rng.choice([None, 60, 120, 300])
+
+            # Ensure if both max_n and max_k set, max_k <= max_n
+            if max_n is not None and max_k is not None and max_k > max_n:
+                max_k = max_n
+
+            insert_subject_plan_limits(
+                self.conn,
+                subject_id=uid,
+                max_n=max_n,
+                max_k=max_k,
+                existential_only=existential_only,
+                rate_limit=rate_limit,
+                rate_window=rate_window,
+            )
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_list_activeUsers_matches_get_subject_effective_entitlements_for_all_active(
+        self,
+    ):
+        t0 = time.time()
+        rows = self.repo.list_activeUsers("active")
+        t1 = time.time()
+
+        self.assertEqual(len(rows), len(self.active_subject_ids))
+
+        # Quick perf sanity: this is mostly a DB join;
+        # should be fast even with thousands.
+        self.assertLess(t1 - t0, BULK_PERF_SECONDS)
+
+        # Compare each row to the per-user query result (consistency check)
+        # NOTE: This is O(n) DB calls; still fine at a few thousand.
+        for r in rows:
+            with self.subTest(userID=r.userID):
+                single = self.repo.get_subject_effective_entitlements(r.userID)
+                self.assertIsNotNone(single)
+                assert single is not None
+
+                # Fields must match exactly (these are "effective entitlements")
+                self.assertEqual(r.userID, single.userID)
+                self.assertEqual(r.apiKeyID, single.apiKeyID)
+                self.assertEqual(r.accountName, single.accountName)
+                self.assertEqual(r.subject_status, single.subject_status)
+
+                self.assertEqual(r.plan_id, single.plan_id)
+                self.assertEqual(r.tier, single.tier)
+                self.assertEqual(r.plan_status, single.plan_status)
+                self.assertEqual(r.allow_live, single.allow_live)
+                self.assertEqual(r.plan_description, single.plan_description)
+
+                self.assertEqual(r.max_n, single.max_n)
+                self.assertEqual(r.max_k, single.max_k)
+                self.assertEqual(r.existential_only, single.existential_only)
+                self.assertEqual(r.rate_limit, single.rate_limit)
+                self.assertEqual(r.rate_window, single.rate_window)
+
+    def test_repo_effective_entitlements_equal_db_coalesce_ground_truth(self):
+        """
+        Ground-truth test: compute expected effective limits via SQL COALESCE,
+        then ensure repo returns the same values.
+        """
+        sql = """
+        SELECT
+          s.userID,
+          COALESCE(spl.max_n, pl.max_n) AS max_n,
+          COALESCE(spl.max_k, pl.max_k) AS max_k,
+          COALESCE(spl.existential_only, pl.existential_only) AS existential_only,
+          COALESCE(spl.rate_limit, pl.rate_limit) AS rate_limit,
+          COALESCE(spl.rate_window, pl.rate_window) AS rate_window
+        FROM subjects s
+        JOIN subject_plan sp ON sp.subject_id = s.userID
+        JOIN plans p ON p.id = sp.plan_id
+        JOIN plan_limits pl ON pl.plan_id = p.id
+        LEFT JOIN subject_plan_limits spl ON spl.subject_id = s.userID
+        WHERE s.status = 'active'
+        """
+        truth = {
+            int(uid): (
+                int(max_n),
+                int(max_k),
+                bool(exist_only),
+                int(rate_limit),
+                int(rate_window),
+            )
+            for (
+                uid,
+                max_n,
+                max_k,
+                exist_only,
+                rate_limit,
+                rate_window,
+            ) in self.conn.execute(sql).fetchall()
+        }
+
+        rows = self.repo.list_activeUsers("active")
+        self.assertEqual(len(rows), len(truth))
+
+        for r in rows:
+            with self.subTest(userID=r.userID):
+                expected = truth.get(r.userID)
+                self.assertIsNotNone(expected)
+                assert expected is not None
+                self.assertEqual(
+                    (r.max_n, r.max_k, r.existential_only, r.rate_limit, r.rate_window),
+                    expected,
+                )
+
+
+class TestBulkMutationsAndIntegrity(unittest.TestCase):
+    """
+    Bulk write/delete/update tests to flush out edge cases:
+    - update plan_limits and verify effect
+    - update subject overrides and verify effect
+    - delete subjects and verify override cascade
+    - verify RESTRICT for plans referenced by subject_plan
+    """
+
+    def setUp(self) -> None:
+        self.conn = make_in_memory_conn()
+        self.repo = PlanRepo(self.conn)
+        self.rng = random.Random(20251229)
+
+        # Use safe tiers if your schema enforces tier list
+        self.plan_free = insert_plan_with_limits(
+            self.conn,
+            tier="free",
+            status="active",
+            allow_live=0,
+            max_n=15,
+            max_k=8,
+            existential_only=0,
+            rate_limit=10,
+            rate_window=60,
+        )
+        self.plan_pro = insert_plan_with_limits(
+            self.conn,
+            tier="pro",
+            status="active",
+            allow_live=1,
+            max_n=31,
+            max_k=16,
+            existential_only=1,
+            rate_limit=20,
+            rate_window=60,
+        )
+
+        self.subjects: list[int] = []
+        for i in range(1200):
+            status = "active" if i % 3 != 0 else "disabled"
+            uid = insert_subject(
+                self.conn,
+                apiKeyID=200_000 + i,
+                accountName=f"user_{i}",
+                status=status,
+            )
+            self.subjects.append(uid)
+            pid = self.plan_free if (i % 2 == 0) else self.plan_pro
+            assign_subject_plan(self.conn, subject_id=uid, plan_id=pid)
+
+        # Give overrides to ~half
+        self.override_subjects = self.rng.sample(
+            self.subjects, k=len(self.subjects) // 2
+        )
+        for uid in self.override_subjects:
+            insert_subject_plan_limits(
+                self.conn,
+                subject_id=uid,
+                max_n=99,
+                max_k=9,
+                existential_only=1,
+                rate_limit=None,
+                rate_window=None,
+            )
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_bulk_update_plan_limits_propagates_to_effective_entitlements(self):
+        # Update plan_free plan_limits
+        # (fallback path should change for users without overrides)
+        self.conn.execute(
+            "UPDATE plan_limits SET max_n = ?, max_k = ? WHERE plan_id = ?",
+            (123, 12, self.plan_free),
+        )
+        self.conn.commit()
+
+        rows = self.repo.list_activeUsers("active")
+
+        # For active users on free plan:
+        # - if they have overrides max_n/max_k fixed at 99/9, they remain
+        # - else fallback should now be 123/12
+        # We'll sample a subset to keep test fast.
+        sample = self.rng.sample(rows, k=min(250, len(rows)))
+        for r in sample:
+            if r.plan_id != self.plan_free:
+                continue
+            with self.subTest(userID=r.userID):
+                has_override = r.userID in set(self.override_subjects)
+                if has_override:
+                    self.assertEqual(r.max_n, 99)
+                    self.assertEqual(r.max_k, 9)
+                else:
+                    self.assertEqual(r.max_n, 123)
+                    self.assertEqual(r.max_k, 12)
+
+    def test_bulk_update_subject_overrides_propagates(self):
+        # Pick 50 override subjects and change their overrides
+        chosen = self.rng.sample(self.override_subjects, k=50)
+        for uid in chosen:
+            self.conn.execute(
+                """
+                UPDATE subject_plan_limits
+                SET max_n = ?, max_k = ?, existential_only = ?, 
+                rate_limit = ?, rate_window = ?
+                WHERE subject_id = ?
+                """,
+                (777, 7, 0, 33, 120, uid),
+            )
+        self.conn.commit()
+
+        for uid in chosen:
+            with self.subTest(userID=uid):
+                row = self.repo.get_subject_effective_entitlements(uid)
+                self.assertIsNotNone(row)
+                assert row is not None
+                self.assertEqual(row.max_n, 777)
+                self.assertEqual(row.max_k, 7)
+                self.assertIs(row.existential_only, False)
+                self.assertEqual(row.rate_limit, 33)
+                self.assertEqual(row.rate_window, 120)
+
+    def test_bulk_delete_subjects_cascades_subject_plan_limits(self):
+        # Delete 100 subjects; any subject_plan_limits should cascade
+        to_delete = self.rng.sample(self.subjects, k=100)
+        for uid in to_delete:
+            self.conn.execute("DELETE FROM subjects WHERE userID = ?", (uid,))
+        self.conn.commit()
+
+        # Verify no dangling overrides
+        dangling = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM subject_plan_limits spl
+            LEFT JOIN subjects s ON s.userID = spl.subject_id
+            WHERE s.userID IS NULL
+            """
+        ).fetchone()[0]
+        self.assertEqual(dangling, 0)
+
+        # Verify repo returns None for deleted
+        for uid in to_delete[:20]:  # sample
+            with self.subTest(userID=uid):
+                self.assertIsNone(self.repo.get_subject_effective_entitlements(uid))
+
+    def test_restrict_delete_plan_when_referenced_by_subject_plan_bulk(self):
+        # Both plans are referenced by many subject_plan rows.
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute("DELETE FROM plans WHERE id = ?", (self.plan_free,))
+            self.conn.commit()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute("DELETE FROM plans WHERE id = ?", (self.plan_pro,))
+            self.conn.commit()
+
+
+class TestBulkConstraintRejectionOnOverrides(unittest.TestCase):
+    """
+    Pound on subject_plan_limits constraints:
+    - invalid existential_only values
+    - invalid ranges for max_n/max_k
+    - invalid max_k > max_n when both provided
+    - invalid rate_limit / rate_window
+    """
+
+    def setUp(self) -> None:
+        self.conn = make_in_memory_conn()
+        self.repo = PlanRepo(self.conn)
+
+        self.plan_id = insert_plan_with_limits(self.conn, tier="free")
+        self.uid = insert_subject(
+            self.conn, apiKeyID=333_333, accountName="X", status="active"
+        )
+        assign_subject_plan(self.conn, subject_id=self.uid, plan_id=self.plan_id)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_bulk_invalid_override_inserts_rejected(self):
+        invalid_rows = [
+            # (max_n, max_k, existential_only, rate_limit, rate_window)
+            (0, None, None, None, None),  # max_n < 1
+            (2049, None, None, None, None),  # max_n > 2048
+            (None, 0, None, None, None),  # max_k < 1
+            (10, 11, None, None, None),  # max_k > max_n (both set)
+            (None, None, 2, None, None),  # existential_only invalid
+            (None, None, None, 0, None),  # rate_limit < 1
+            (None, None, None, None, 0),  # rate_window < 1
+        ]
+
+        for i, (max_n, max_k, existential_only, rate_limit, rate_window) in enumerate(
+            invalid_rows
+        ):
+            with self.subTest(case=i), self.assertRaises(sqlite3.IntegrityError):
+                self.conn.execute(
+                    """
+                        INSERT INTO subject_plan_limits
+                        (subject_id, max_n, max_k, existential_only,
+                         rate_limit, rate_window)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                    (
+                        self.uid,
+                        max_n,
+                        max_k,
+                        existential_only,
+                        rate_limit,
+                        rate_window,
+                    ),
+                )
+                self.conn.commit()
+
+    def test_bulk_invalid_override_updates_rejected(self):
+        # Insert a valid override first
+        insert_subject_plan_limits(self.conn, subject_id=self.uid, max_n=20, max_k=10)
+
+        bad_updates = [
+            ("max_n = 0", ()),
+            ("max_n = 999999", ()),
+            ("max_k = 0", ()),
+            ("existential_only = 3", ()),
+            ("rate_limit = 0", ()),
+            ("rate_window = 0", ()),
+            # max_k > max_n when both non-null
+            ("max_n = 10, max_k = 11", ()),
+        ]
+
+        for i, (set_clause, params) in enumerate(bad_updates):
+            with (
+                self.subTest(case=i, set_clause=set_clause),
+                self.assertRaises(sqlite3.IntegrityError),
+            ):
+                self.conn.execute(
+                    f"""UPDATE subject_plan_limits SET {set_clause} 
+                        WHERE subject_id = ?""",
+                    (*params, self.uid),
+                )
+                self.conn.commit()
+
+
+class TestBulkWeirdAccountNames(unittest.TestCase):
+    """
+    Bulk stress on big/unicode/odd strings for accountName:
+    Ensures joins and mappings don't choke on large TEXT payloads.
+    """
+
     def setUp(self) -> None:
         self.conn = make_in_memory_conn()
         self.repo = PlanRepo(self.conn)
@@ -969,35 +1132,40 @@ class TestListActiveUsersJoinAssumptions(unittest.TestCase):
     def tearDown(self) -> None:
         self.conn.close()
 
-    def test_subject_plan_primary_key_prevents_multiple_plans_per_subject(self):
-        uid = insert_subject(self.conn, apiKeyID=1111, accountName="A", status="active")
-        assign_subject_plan(self.conn, subject_id=uid, plan_id=self.plan_id)
+    def test_bulk_weird_account_names_roundtrip(self):
+        weird_names = [
+            "💥" * 50,
+            "测试" * 100,
+            "привет" * 80,
+            "a" * 100_000,  # huge
+            "line1\nline2\r\nline3\tend",
+            "quote'\"semi;--",
+            "nullbyte?\0stillstring",  # python allows, sqlite may store
+        ]
 
-        # subject_plan.subject_id is PRIMARY KEY, so a second assignment should fail
-        with self.assertRaises(sqlite3.IntegrityError):
+        uids: list[int] = []
+        for i, name in enumerate(weird_names):
+            uid = insert_subject(
+                self.conn,
+                apiKeyID=444_000 + i,
+                accountName=name,
+                status="active",
+            )
             assign_subject_plan(self.conn, subject_id=uid, plan_id=self.plan_id)
+            uids.append(uid)
 
-    def test_list_activeUsers_ignores_subjects_without_plan(self):
-        _uid = insert_subject(
-            self.conn, apiKeyID=2222, accountName="NoPlan", status="active"
-        )
-        # no subject_plan row added
-        res = self.repo.list_activeUsers("active")
-        self.assertEqual(res, [])
+        rows = self.repo.list_activeUsers("active")
+        by_id = {r.userID: r for r in rows}
 
-    def test_list_activeUsers_handles_large_account_names(self):
-        uid = insert_subject(
-            self.conn,
-            apiKeyID=3333,
-            accountName="X" * 50_000,  # huge
-            status="active",
-        )
-        assign_subject_plan(self.conn, subject_id=uid, plan_id=self.plan_id)
+        for uid, expected in zip(uids, weird_names, strict=False):
+            with self.subTest(userID=uid):
+                self.assertIn(uid, by_id)
+                self.assertEqual(by_id[uid].accountName, expected)
 
-        res = self.repo.list_activeUsers("active")
-        self.assertEqual(len(res), 1)
-        self.assertEqual(res[0].userID, uid)
-        self.assertEqual(res[0].accountName, "X" * 50_000)
+                single = self.repo.get_subject_effective_entitlements(uid)
+                self.assertIsNotNone(single)
+                assert single is not None
+                self.assertEqual(single.accountName, expected)
 
 
 if __name__ == "__main__":

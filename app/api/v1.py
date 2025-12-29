@@ -1,16 +1,18 @@
 # app/api/v1.py
 from __future__ import annotations
 
+import sqlite3
+from typing import Iterator
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.core import (
     AuthenticationError,
     EntitlementService,
-    InactivePlanError,
     InvalidAuthenticationError,
     MissingAuthenticationError,
+    PlanInactiveError,
     SubjectInactiveError,
     SubjectNotFoundError,
     authenticate_request,
@@ -18,6 +20,14 @@ from app.core import (
 from app.db import PlanRepo, get_connection
 
 router = APIRouter(prefix="/v1", tags=["v1"])
+
+
+def get_conn() -> Iterator[sqlite3.Connection]:
+    conn = get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _request_id_from_headers(request: Request) -> str:
@@ -28,24 +38,21 @@ def _request_id_from_headers(request: Request) -> str:
     return request.headers.get("x-request-id") or str(uuid4())
 
 
-def _get_entitlement_service() -> EntitlementService:
+def _get_entitlement_service(conn=Depends(get_conn)) -> EntitlementService:
     """
     Establishes connection to the Repository
     """
-
-    # LOOK INTO ADDING Depends
-    conn = get_connection()
     repo = PlanRepo(conn)
     return EntitlementService(repo)
 
 
 @router.get("/whoami")
-async def whoami(request: Request) -> dict:
+async def whoami(request: Request, response: Response) -> dict:
     """
     Debug endpoint: proves authentication plumbing works.
     """
     request_id = _request_id_from_headers(request)
-    request.headers["X-Request-Id"] = request_id
+    response.headers["X-Request-Id"] = request_id
     try:
         identity = authenticate_request(request.headers)
     except MissingAuthenticationError as exc:
@@ -64,7 +71,11 @@ async def whoami(request: Request) -> dict:
 
 
 @router.get("/entitlements")
-async def entitlements(request: Request, response: Response) -> dict:
+async def entitlements(
+    request: Request,
+    response: Response,
+    svc: EntitlementService = Depends(_get_entitlement_service),
+) -> dict:
     """
     Returns effective entitlements for the authenticated subject.
     The gateway uses this to enforce limits/flags (tier, allow_live, max_n, etc.).
@@ -83,17 +94,15 @@ async def entitlements(request: Request, response: Response) -> dict:
 
     # Get Entitlement Service class, call our Repo functions to get entitlements
     # connected to our subject id.
-    svc = _get_entitlement_service()
     try:
         effective = svc.get_entitlements({"userID": identity.subject_id})
     except SubjectNotFoundError as exc:
-        # Raising error here for now, but should we create a new user
-        # if one isnt found, or will we make another endpoint that listens
-        # for when a new email is registered?
+        # Raise error for now. We'll have an edpoint connection create the
+        # user from a link
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except SubjectInactiveError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except InactivePlanError as exc:
+    except PlanInactiveError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except Exception as exc:
         # DB down / unexpected repo failure → service unavailable

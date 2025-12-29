@@ -12,7 +12,7 @@ from .auth import (
 )
 
 # Entitlements exports
-from .entitlements.types import (
+from .entitlementService import (
     EffectiveEntitlements,
     EntitlementsError,
     EntitlementService,
