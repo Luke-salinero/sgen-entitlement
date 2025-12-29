@@ -11,7 +11,8 @@ def get_connection() -> sqlite3.Connection:
     """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH)
+    # SQlite objects created in a thread can only be used in that same thread
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA busy_timeout = 5000;")

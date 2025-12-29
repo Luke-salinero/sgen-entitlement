@@ -90,3 +90,6 @@ tiers.*.json
 #DB Directory
 data/*
 !data/.gitkeep
+
+#Scripts
+scripts/
