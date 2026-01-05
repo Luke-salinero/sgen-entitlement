@@ -4,6 +4,8 @@ from typing import Mapping, Optional
 from jose import jwt
 from jose.exceptions import JWTError
 
+from .config import get_settings
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -49,12 +51,20 @@ def _authenticate_bearer(auth_header: str) -> Identity:
 
     # CHANGE ONCE WE KNOW HOW JWT IS FORMATTED
     try:
+        settings = get_settings()
+
+        # Change to RS256. Using HS256 for dev
         claims = jwt.decode(
             token,
-            key="dev-secret",
-            algorithms=["HS256"],
-            audience="OURAUDIENCE",
-            issuer="OURISSUER",
+            key=settings.jwt_public_key,
+            algorithms=list(settings.jwt_algorithms),
+            audience=settings.jwt_audience,
+            issuer=settings.jwt_issuer,
+            options=(
+                {"leeway": settings.jwt_leeway_seconds}
+                if settings.jwt_leeway_seconds
+                else None
+            ),
         )
     except JWTError as err:
         raise InvalidAuthenticationError("Invalid bearer token") from err

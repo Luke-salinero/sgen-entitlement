@@ -17,6 +17,11 @@
 - ❓ Need to finalize the JWT claim contract to determine which identity fields are included in issued tokens.
 - ❓ Open design question around subject provisioning: explicit onboarding vs gateway-driven creation. 
 
-
+## Dec 31, 2025 — README and Settings
+- ✅ Modified README to encapsulate whole REPO.
+- ❓ Need to indentify what should be grabbed from .env
+to go into settings and what should go into settings
+- ❓ Once auth is set up, switch HS256 Algorithm to RS256.
+- ❓ Clean commit history.
 
 
