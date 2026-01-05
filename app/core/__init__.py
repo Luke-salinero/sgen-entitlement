@@ -10,6 +10,9 @@ from .auth import (
     MissingAuthenticationError,
     authenticate_request,
 )
+from .config import (
+    get_settings,
+)
 
 # Entitlements exports
 from .entitlementService import (
@@ -35,4 +38,6 @@ __all__ = [
     "SubjectNotFoundError",
     "SubjectInactiveError",
     "PlanInactiveError",
+    # Config,
+    "get_settings",
 ]
