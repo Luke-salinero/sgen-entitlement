@@ -16,6 +16,7 @@ from app.core import (
     SubjectInactiveError,
     SubjectNotFoundError,
     authenticate_request,
+    get_settings,
 )
 from app.db import PlanRepo, get_connection
 
@@ -105,10 +106,10 @@ async def entitlements(
     except PlanInactiveError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except Exception as exc:
-        # DB down / unexpected repo failure → service unavailable
-        raise HTTPException(
-            status_code=503, detail="Entitlements service unavailable"
-        ) from exc
+        detail = "Entitlements service unavailable"
+        if get_settings().debug:
+            detail = f"{detail}: {type(exc).__name__}: {exc}"
+        raise HTTPException(status_code=503, detail=detail) from exc
 
     return {
         "subject_id": effective.userID,

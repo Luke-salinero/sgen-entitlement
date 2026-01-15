@@ -27,7 +27,7 @@ class PlanWithLimits:
 
 @dataclass(frozen=True)
 class SubjectEffectiveEntitlementsRow:
-    userID: int
+    userID: str
     apiKeyID: int
     accountName: str
     subject_status: str
@@ -220,7 +220,7 @@ class PlanRepo:
 
             out.append(
                 SubjectEffectiveEntitlementsRow(
-                    userID=int(userID),
+                    userID=str(userID),
                     apiKeyID=int(apiKeyID),
                     accountName=str(accountName),
                     subject_status=str(subject_status),
@@ -292,7 +292,7 @@ class PlanRepo:
         ) = row
 
         return SubjectEffectiveEntitlementsRow(
-            userID=int(userID),
+            userID=str(userID),
             apiKeyID=int(apiKeyID),
             accountName=str(accountName),
             subject_status=str(subject_status),

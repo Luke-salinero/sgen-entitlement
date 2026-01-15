@@ -24,4 +24,12 @@ to go into settings and what should go into settings
 - ❓ Once auth is set up, switch HS256 Algorithm to RS256.
 - ❓ Clean commit history.
 
+## Jan 14th, 2026 — Update SQL to JWT Settings
+ ✅ Updated SCHEMA to account for personalized JWT
+ ✅ Updated userID to now be UUID format instead of integer.
+ ✅ Modified auth.py to account for correct public key verification instead of hs256.
+
+
+
+
 

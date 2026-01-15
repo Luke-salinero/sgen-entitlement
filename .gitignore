@@ -94,3 +94,4 @@ data/*
 
 #Scripts
 scripts/
+app/db/schema.sql
