@@ -10,7 +10,7 @@ from app.db import PlanRepo, SubjectEffectiveEntitlementsRow
 # Should I split this up (into a different file) for clarity?
 @dataclass(frozen=True)
 class EffectiveEntitlements:
-    userID: int
+    userID: str
     apiKeyID: int
     accountName: str
     subject_status: str
@@ -77,9 +77,9 @@ class EntitlementService:
         Explicit userID claim.
         """
         if "userID" in claims:
-            return int(claims["userID"])
+            return str(claims["userID"])
         if "sub" in claims:
-            return int(claims["sub"])
+            return str(claims["sub"])
         raise EntitlementsError(
             "Claims missing user identifier (expected 'userID' or 'sub')."
         )
