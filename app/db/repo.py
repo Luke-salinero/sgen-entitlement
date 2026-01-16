@@ -28,7 +28,7 @@ class PlanWithLimits:
 @dataclass(frozen=True)
 class SubjectEffectiveEntitlementsRow:
     userID: str
-    apiKeyID: int
+    apiKey: str
     accountName: str
     subject_status: str
 
@@ -173,7 +173,7 @@ class PlanRepo:
         sql = """
         SELECT
         s.userID,
-        s.apiKeyID,
+        s.apiKey,
         s.accountName,
         s.status AS subject_status,
 
@@ -203,7 +203,7 @@ class PlanRepo:
         for row in rows:
             (
                 userID,
-                apiKeyID,
+                apiKey,
                 accountName,
                 subject_status,
                 plan_id,
@@ -221,7 +221,7 @@ class PlanRepo:
             out.append(
                 SubjectEffectiveEntitlementsRow(
                     userID=str(userID),
-                    apiKeyID=int(apiKeyID),
+                    apiKey=str(apiKey),
                     accountName=str(accountName),
                     subject_status=str(subject_status),
                     plan_id=int(plan_id),
@@ -245,7 +245,7 @@ class PlanRepo:
         sql = """
         SELECT
           s.userID,
-          s.apiKeyID,
+          s.apiKey,
           s.accountName,
           s.status AS subject_status,
 
@@ -276,7 +276,7 @@ class PlanRepo:
 
         (
             userID,
-            apiKeyID,
+            apiKey,
             accountName,
             subject_status,
             plan_id,
@@ -293,7 +293,7 @@ class PlanRepo:
 
         return SubjectEffectiveEntitlementsRow(
             userID=str(userID),
-            apiKeyID=int(apiKeyID),
+            apiKey=str(apiKey),
             accountName=str(accountName),
             subject_status=str(subject_status),
             plan_id=int(plan_id),
@@ -307,3 +307,61 @@ class PlanRepo:
             rate_limit=int(rate_limit),
             rate_window=int(rate_window),
         )
+
+    def upsert_subject(
+        self,
+        *,
+        user_id: str,
+        api_key: str,
+        account_name: str,
+        status: str = "active",
+    ) -> None:
+        """
+        Create the subject if it doesn't exist; otherwise update it.
+        """
+        sql = """
+        INSERT INTO subjects (userID, apiKey, accountName, status)
+        VALUES (:userID, :apiKey, :accountName, :status)
+        ON CONFLICT(userID) DO UPDATE SET
+        apiKey = excluded.apiKey,
+        accountName = excluded.accountName,
+        status = excluded.status
+        """
+        self._conn.execute(
+            sql,
+            {
+                "userID": user_id,
+                "apiKey": api_key,
+                "accountName": account_name,
+                "status": status,
+            },
+        )
+
+    def ensure_subject_default_plan(
+        self,
+        *,
+        user_id: str,
+        default_tier: str = "free",
+    ) -> None:
+        """
+        Ensures subject_plan row exists for the subject. If missing, assigns the plan
+        identified by default tier.
+        """
+        # Find plan_id for the tier
+        plan_row = self._conn.execute(
+            "SELECT id FROM plans WHERE tier = ? LIMIT 1",
+            (default_tier,),
+        ).fetchone()
+
+        if plan_row is None:
+            raise ValueError(f"Default plan tier not found: {default_tier}")
+
+        plan_id = int(plan_row[0])
+
+        # Insert only if missing
+        sql = """
+        INSERT INTO subject_plan (subject_id, plan_id)
+        VALUES (?, ?)
+        ON CONFLICT(subject_id) DO NOTHING
+        """
+        self._conn.execute(sql, (user_id, plan_id))
