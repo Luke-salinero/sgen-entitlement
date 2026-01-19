@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.db import EntitlementsRepo, get_db
+from app.db import PlanRepo, get_db
 
 router = APIRouter()
 
@@ -30,7 +30,7 @@ class SubjectSyncResponse(BaseModel):
 
 @router.post("/internal/subjects/sync", response_model=SubjectSyncResponse)
 def auth_sync(req: SubjectSyncRequest, conn: DbConn):
-    repo = EntitlementsRepo(conn)
+    repo = PlanRepo(conn)
 
     # Upsert subject + rotate api_key
     try:
