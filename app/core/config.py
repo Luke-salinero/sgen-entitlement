@@ -22,7 +22,7 @@ def _env(name: str, default: str | None = None) -> str:
 class Settings:
     # ---- App/service ----
     env: str = os.getenv("ENV", "dev")
-    debug: bool = os.getenv("DEBUG", "0") == "1"
+    debug: bool = os.getenv("DEBUG", "1") == "1"
     service_name: str = os.getenv("SERVICE_NAME", "entitlements-service")
     request_id_header: str = os.getenv("REQUEST_ID_HEADER", "X-Request-Id")
 

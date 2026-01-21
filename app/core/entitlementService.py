@@ -11,7 +11,7 @@ from app.db import PlanRepo, SubjectEffectiveEntitlementsRow
 @dataclass(frozen=True)
 class EffectiveEntitlements:
     userID: str
-    apiKeyID: int
+    apiKey: int
     accountName: str
     subject_status: str
 
@@ -87,7 +87,7 @@ class EntitlementService:
     def to_domain(self, row: SubjectEffectiveEntitlementsRow) -> EffectiveEntitlements:
         return EffectiveEntitlements(
             userID=row.userID,
-            apiKeyID=row.apiKeyID,
+            apiKey=row.apiKey,
             accountName=row.accountName,
             subject_status=row.subject_status,
             plan_id=row.plan_id,
