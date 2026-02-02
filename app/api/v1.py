@@ -96,7 +96,9 @@ async def entitlements(
     # Get Entitlement Service class, call our Repo functions to get entitlements
     # connected to our subject id.
     try:
-        effective = svc.get_entitlements(identity.raw_claims)
+        effective = svc.get_entitlements(
+            {"userID": identity.raw_claims["api_key_owner"]}
+        )
     except SubjectNotFoundError as exc:
         # Raise error for now. We'll have an edpoint connection create the
         # user from a link

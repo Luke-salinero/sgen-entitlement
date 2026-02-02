@@ -11,7 +11,7 @@ from app.db import PlanRepo, SubjectEffectiveEntitlementsRow
 @dataclass(frozen=True)
 class EffectiveEntitlements:
     userID: str
-    apiKey: int
+    apiKey: str
     accountName: str
     subject_status: str
 
