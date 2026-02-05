@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+import urllib.error
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Mapping, Optional
@@ -43,14 +44,55 @@ class InvalidAuthenticationError(AuthenticationError):
         super().__init__(message, code="auth_invalid")
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=4)
 def _fetch_jwks(jwks_url: str) -> dict[str, Any]:
     """
-    Fetch Keycloak JWKS and cache it to avoid pulling on every request.
-    If you rotate realm keys, restart the service (or remove caching later).
+    Fetch and cache JWKS from the given URL.
+
+    - Only caches successful fetches
+    - Raises InvalidAuthenticationError on any failure
+    - Provides actionable error messages
     """
-    with urllib.request.urlopen(jwks_url, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(jwks_url, timeout=10) as resp:
+            status = getattr(resp, "status", 200)
+            body = resp.read().decode("utf-8")
+
+    except urllib.error.HTTPError as e:
+        raise InvalidAuthenticationError(
+            f"JWKS fetch failed ({e.code}) from {jwks_url}"
+        ) from e
+
+    except urllib.error.URLError as e:
+        raise InvalidAuthenticationError(
+            f"JWKS endpoint unreachable: {jwks_url}"
+        ) from e
+
+    except Exception as e:
+        raise InvalidAuthenticationError(
+            f"Unexpected error fetching JWKS from {jwks_url}"
+        ) from e
+
+    # Parse JSON
+    try:
+        jwks = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise InvalidAuthenticationError(
+            f"JWKS response from {jwks_url} is not valid JSON"
+        ) from e
+
+    # Validate structure
+    if not isinstance(jwks, dict) or "keys" not in jwks:
+        raise InvalidAuthenticationError(
+            f"JWKS response from {jwks_url} missing 'keys'"
+        )
+
+    if not isinstance(jwks["keys"], list) or not jwks["keys"]:
+        raise InvalidAuthenticationError(
+            f"JWKS response from {jwks_url} contains no keys"
+        )
+
+    return jwks
 
 
 def _select_jwk_for_token(token: str, jwks: dict[str, Any]) -> dict[str, Any]:
