@@ -119,9 +119,21 @@ def _authenticate_bearer(auth_header: str) -> Identity:
     token = auth_header.removeprefix("Bearer ").strip()
     if not token:
         raise InvalidAuthenticationError("Empty bearer token")
+    header = jwt.get_unverified_header(token)
+    claims_preview = jwt.get_unverified_claims(token)
 
+    print("JWT header:", header)
+    print("JWT iss:", claims_preview.get("iss"))
+    print("JWT aud:", claims_preview.get("aud"))
+    print("JWT exp:", claims_preview.get("exp"))
+    print("JWT nbf:", claims_preview.get("nbf"))
+    print("JWT azp:", claims_preview.get("azp"))
     try:
         settings = get_settings()
+        print("Expected issuer:", settings.jwt_issuer)
+        print("Expected audience:", settings.jwt_audience)
+        print("Allowed algorithms:", settings.jwt_algorithms)
+        print("JWKS URL:", settings.jwt_jwks_url)
 
         # If a JWKS URL is configured, verify like Keycloak expects (RS256 via JWKS).
         # Otherwise, fall back to the old "shared secret / static key" behavior for dev.
@@ -133,16 +145,23 @@ def _authenticate_bearer(auth_header: str) -> Identity:
 
         if jwks_url:
             jwks = _fetch_jwks(jwks_url)
+            print("JWKS keys:", [k.get("kid") for k in jwks.get("keys", [])])
             jwk_key = _select_jwk_for_token(token, jwks)
-
-            claims = jwt.decode(
+            print("Selected JWK kid:", jwk_key.get("kid"))
+            print("Selected JWK alg:", jwk_key.get("alg"))
+            try:
+                claims = jwt.decode(
                 token,
                 key=jwk_key,
                 algorithms=list(settings.jwt_algorithms),
                 audience=settings.jwt_audience,
                 issuer=settings.jwt_issuer,
                 options=options or None,
-            )
+                )
+            except Exception as e:
+                print("JWT decode failed:", type(e).__name__, str(e))
+                raise
+
         else:
             # Old path (HS256 or manually-provided key)
             claims = jwt.decode(
