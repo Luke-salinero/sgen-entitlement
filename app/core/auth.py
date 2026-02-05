@@ -154,9 +154,11 @@ def _authenticate_bearer(auth_header: str) -> Identity:
                 token,
                 key=jwk_key,
                 algorithms=list(settings.jwt_algorithms),
-                audience=settings.jwt_audience,
                 issuer=settings.jwt_issuer,
-                options=options or None,
+                options={
+                    "verify_aud": False,
+                    **options,
+                },
                 )
             except Exception as e:
                 print("JWT decode failed:", type(e).__name__, str(e))
