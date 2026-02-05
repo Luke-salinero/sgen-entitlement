@@ -27,14 +27,14 @@ class Settings:
     request_id_header: str = os.getenv("REQUEST_ID_HEADER", "X-Request-Id")
 
     # ---- JWT verification ----
-    jwt_issuer: str = _env("JWT_ISSUER", "http://sgen-cape.bigsigma.tech/realms/sgen-test")
+    jwt_issuer: str = _env("JWT_ISSUER", "https://sgen-cape.bigsigma.tech/realms/sgen-test")
     jwt_audience: str = _env("JWT_AUDIENCE", "account")
     jwt_algorithms: tuple[str, ...] = tuple(
         os.getenv("JWT_ALGORITHMS", "RS256").split(",")
     )
     jwt_jwks_url: str = _env(
         "JWT_JWKS_URL",
-        "http://sgen-cape.bigsigma.tech/realms/sgen-test/protocol/openid-connect/certs",
+        "https://sgen-cape.bigsigma.tech/realms/sgen-test/protocol/openid-connect/certs",
     )
 
     # Public key for RS256 verification.
