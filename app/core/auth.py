@@ -45,54 +45,61 @@ class InvalidAuthenticationError(AuthenticationError):
 
 
 @lru_cache(maxsize=4)
-def _fetch_jwks(jwks_url: str) -> dict[str, Any]:
-    """
-    Fetch and cache JWKS from the given URL.
+def _fetch_jwks(jwks_url: str) -> dict:
+    print("=== FETCH_JWKS START ===")
+    print("JWKS URL:", jwks_url)
+    print("JWKS FUNC FILE:", __file__)
 
-    - Only caches successful fetches
-    - Raises InvalidAuthenticationError on any failure
-    - Provides actionable error messages
-    """
+    req = urllib.request.Request(
+        jwks_url,
+        headers={
+            "User-Agent": "sgen-entitlement/DEBUG",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+
     try:
-        with urllib.request.urlopen(jwks_url, timeout=10) as resp:
-            status = getattr(resp, "status", 200)
-            body = resp.read().decode("utf-8")
+        print("Opening URL...")
+        resp = urllib.request.urlopen(req, timeout=10)
+        print("Opened URL successfully")
+
+        status = getattr(resp, "status", "unknown")
+        print("HTTP status:", status)
+
+        body_bytes = resp.read()
+        print("Read body bytes:", len(body_bytes))
+
+        body = body_bytes.decode("utf-8", errors="replace")
+        print("First 200 chars of body:")
+        print(body[:200])
+
+        data = json.loads(body)
+        print("Parsed JWKS keys:", len(data.get("keys", [])))
+        print("=== FETCH_JWKS SUCCESS ===")
+        return data
 
     except urllib.error.HTTPError as e:
-        raise InvalidAuthenticationError(
-            f"JWKS fetch failed ({e.code}) from {jwks_url}"
-        ) from e
+        print("=== FETCH_JWKS HTTPError ===")
+        print("Status:", e.code)
+        print("Headers:", dict(e.headers))
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            print("Error body (first 500 chars):")
+            print(err_body[:500])
+        except Exception as read_err:
+            print("Could not read error body:", read_err)
+        raise
 
     except urllib.error.URLError as e:
-        raise InvalidAuthenticationError(
-            f"JWKS endpoint unreachable: {jwks_url}"
-        ) from e
+        print("=== FETCH_JWKS URLError ===")
+        print("Reason:", repr(e.reason))
+        raise
 
     except Exception as e:
-        raise InvalidAuthenticationError(
-            f"Unexpected error fetching JWKS from {jwks_url}"
-        ) from e
-
-    # Parse JSON
-    try:
-        jwks = json.loads(body)
-    except json.JSONDecodeError as e:
-        raise InvalidAuthenticationError(
-            f"JWKS response from {jwks_url} is not valid JSON"
-        ) from e
-
-    # Validate structure
-    if not isinstance(jwks, dict) or "keys" not in jwks:
-        raise InvalidAuthenticationError(
-            f"JWKS response from {jwks_url} missing 'keys'"
-        )
-
-    if not isinstance(jwks["keys"], list) or not jwks["keys"]:
-        raise InvalidAuthenticationError(
-            f"JWKS response from {jwks_url} contains no keys"
-        )
-
-    return jwks
+        print("=== FETCH_JWKS UNKNOWN ERROR ===")
+        print(type(e).__name__, str(e))
+        raise
 
 
 def _select_jwk_for_token(token: str, jwks: dict[str, Any]) -> dict[str, Any]:
@@ -132,8 +139,7 @@ def _authenticate_bearer(auth_header: str) -> Identity:
         settings = get_settings()
         print("Expected issuer:", settings.jwt_issuer)
         print("Expected audience:", settings.jwt_audience)
-        print("Allowed algorithms:", settings.jwt_algorithms)
-        print("JWKS URL:", settings.jwt_jwks_url)
+
 
         # If a JWKS URL is configured, verify like Keycloak expects (RS256 via JWKS).
         # Otherwise, fall back to the old "shared secret / static key" behavior for dev.
@@ -145,7 +151,6 @@ def _authenticate_bearer(auth_header: str) -> Identity:
 
         if jwks_url:
             jwks = _fetch_jwks(jwks_url)
-            print("JWKS keys:", [k.get("kid") for k in jwks.get("keys", [])])
             jwk_key = _select_jwk_for_token(token, jwks)
             print("Selected JWK kid:", jwk_key.get("kid"))
             print("Selected JWK alg:", jwk_key.get("alg"))
