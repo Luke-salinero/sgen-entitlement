@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Mapping, Optional
@@ -46,9 +46,6 @@ class InvalidAuthenticationError(AuthenticationError):
 
 @lru_cache(maxsize=4)
 def _fetch_jwks(jwks_url: str) -> dict:
-    print("=== FETCH_JWKS START ===")
-    print("JWKS URL:", jwks_url)
-    print("JWKS FUNC FILE:", __file__)
 
     req = urllib.request.Request(
         jwks_url,
@@ -60,29 +57,13 @@ def _fetch_jwks(jwks_url: str) -> dict:
     )
 
     try:
-        print("Opening URL...")
         resp = urllib.request.urlopen(req, timeout=10)
-        print("Opened URL successfully")
-
-        status = getattr(resp, "status", "unknown")
-        print("HTTP status:", status)
-
         body_bytes = resp.read()
-        print("Read body bytes:", len(body_bytes))
-
         body = body_bytes.decode("utf-8", errors="replace")
-        print("First 200 chars of body:")
-        print(body[:200])
 
-        data = json.loads(body)
-        print("Parsed JWKS keys:", len(data.get("keys", [])))
-        print("=== FETCH_JWKS SUCCESS ===")
-        return data
+        return json.loads(body)
 
     except urllib.error.HTTPError as e:
-        print("=== FETCH_JWKS HTTPError ===")
-        print("Status:", e.code)
-        print("Headers:", dict(e.headers))
         try:
             err_body = e.read().decode("utf-8", errors="replace")
             print("Error body (first 500 chars):")
@@ -126,20 +107,9 @@ def _authenticate_bearer(auth_header: str) -> Identity:
     token = auth_header.removeprefix("Bearer ").strip()
     if not token:
         raise InvalidAuthenticationError("Empty bearer token")
-    header = jwt.get_unverified_header(token)
-    claims_preview = jwt.get_unverified_claims(token)
 
-    print("JWT header:", header)
-    print("JWT iss:", claims_preview.get("iss"))
-    print("JWT aud:", claims_preview.get("aud"))
-    print("JWT exp:", claims_preview.get("exp"))
-    print("JWT nbf:", claims_preview.get("nbf"))
-    print("JWT azp:", claims_preview.get("azp"))
     try:
         settings = get_settings()
-        print("Expected issuer:", settings.jwt_issuer)
-        print("Expected audience:", settings.jwt_audience)
-
 
         # If a JWKS URL is configured, verify like Keycloak expects (RS256 via JWKS).
         # Otherwise, fall back to the old "shared secret / static key" behavior for dev.
@@ -152,18 +122,16 @@ def _authenticate_bearer(auth_header: str) -> Identity:
         if jwks_url:
             jwks = _fetch_jwks(jwks_url)
             jwk_key = _select_jwk_for_token(token, jwks)
-            print("Selected JWK kid:", jwk_key.get("kid"))
-            print("Selected JWK alg:", jwk_key.get("alg"))
             try:
                 claims = jwt.decode(
-                token,
-                key=jwk_key,
-                algorithms=list(settings.jwt_algorithms),
-                issuer=settings.jwt_issuer,
-                options={
-                    "verify_aud": False,
-                    **options,
-                },
+                    token,
+                    key=jwk_key,
+                    algorithms=list(settings.jwt_algorithms),
+                    issuer=settings.jwt_issuer,
+                    options={
+                        "verify_aud": False,
+                        **options,
+                    },
                 )
             except Exception as e:
                 print("JWT decode failed:", type(e).__name__, str(e))
