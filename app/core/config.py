@@ -43,6 +43,7 @@ class Settings:
 
     # Optional: small clock skew leeway (seconds) for exp/nbf checks
     jwt_leeway_seconds: int = int(os.getenv("JWT_LEEWAY_SECONDS", "0"))
+    database_url = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/entitlements"
 
     # ---- Database (SQLite) ----
     # Default: <repo_root>/app/data/entitlements.db (matches your current pattern)

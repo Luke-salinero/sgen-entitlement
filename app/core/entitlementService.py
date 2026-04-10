@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-from app.db import PlanRepo, SubjectEffectiveEntitlementsRow
+from app.db.repo import PlanRepo, SubjectEffectiveEntitlementsRow
 
 
 # Should I split this up (into a different file) for clarity?
@@ -72,7 +72,7 @@ class EntitlementService:
 
         return self.to_domain(row)
 
-    def resolve_user_id(self, claims: Mapping[str, Any]) -> int:
+    def resolve_user_id(self, claims: Mapping[str, Any]) -> str:
         """
         Explicit userID claim.
         """
