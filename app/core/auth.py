@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from jose import jwt
 from jose.exceptions import JWTError
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,59 +49,30 @@ class InvalidAuthenticationError(AuthenticationError):
 
 @lru_cache(maxsize=4)
 def _fetch_jwks(jwks_url: str) -> dict:
-    print("=== FETCH_JWKS START ===")
-    print("JWKS URL:", jwks_url)
-    print("JWKS FUNC FILE:", __file__)
-
     req = urllib.request.Request(
         jwks_url,
         headers={
-            "User-Agent": "sgen-entitlement/DEBUG",
+            "User-Agent": "sgen-entitlement",
             "Accept": "application/json",
         },
         method="GET",
     )
 
     try:
-        print("Opening URL...")
         resp = urllib.request.urlopen(req, timeout=10)
-        print("Opened URL successfully")
-
-        status = getattr(resp, "status", "unknown")
-        print("HTTP status:", status)
-
-        body_bytes = resp.read()
-        print("Read body bytes:", len(body_bytes))
-
-        body = body_bytes.decode("utf-8", errors="replace")
-        print("First 200 chars of body:")
-        print(body[:200])
-
-        data = json.loads(body)
-        print("Parsed JWKS keys:", len(data.get("keys", [])))
-        print("=== FETCH_JWKS SUCCESS ===")
-        return data
+        body = resp.read().decode("utf-8", errors="replace")
+        return json.loads(body)
 
     except urllib.error.HTTPError as e:
-        print("=== FETCH_JWKS HTTPError ===")
-        print("Status:", e.code)
-        print("Headers:", dict(e.headers))
-        try:
-            err_body = e.read().decode("utf-8", errors="replace")
-            print("Error body (first 500 chars):")
-            print(err_body[:500])
-        except Exception as read_err:
-            print("Could not read error body:", read_err)
+        logger.error("JWKS fetch failed: HTTP %s from %s", e.code, jwks_url)
         raise
 
     except urllib.error.URLError as e:
-        print("=== FETCH_JWKS URLError ===")
-        print("Reason:", repr(e.reason))
+        logger.error("JWKS fetch failed: %s (%s)", e.reason, jwks_url)
         raise
 
     except Exception as e:
-        print("=== FETCH_JWKS UNKNOWN ERROR ===")
-        print(type(e).__name__, str(e))
+        logger.error("JWKS fetch failed: %s: %s", type(e).__name__, e)
         raise
 
 
@@ -126,20 +100,9 @@ def _authenticate_bearer(auth_header: str) -> Identity:
     token = auth_header.removeprefix("Bearer ").strip()
     if not token:
         raise InvalidAuthenticationError("Empty bearer token")
-    header = jwt.get_unverified_header(token)
-    claims_preview = jwt.get_unverified_claims(token)
 
-    print("JWT header:", header)
-    print("JWT iss:", claims_preview.get("iss"))
-    print("JWT aud:", claims_preview.get("aud"))
-    print("JWT exp:", claims_preview.get("exp"))
-    print("JWT nbf:", claims_preview.get("nbf"))
-    print("JWT azp:", claims_preview.get("azp"))
     try:
         settings = get_settings()
-        print("Expected issuer:", settings.jwt_issuer)
-        print("Expected audience:", settings.jwt_audience)
-
 
         # If a JWKS URL is configured, verify like Keycloak expects (RS256 via JWKS).
         # Otherwise, fall back to the old "shared secret / static key" behavior for dev.
@@ -152,25 +115,21 @@ def _authenticate_bearer(auth_header: str) -> Identity:
         if jwks_url:
             jwks = _fetch_jwks(jwks_url)
             jwk_key = _select_jwk_for_token(token, jwks)
-            print("Selected JWK kid:", jwk_key.get("kid"))
-            print("Selected JWK alg:", jwk_key.get("alg"))
-            try:
-                claims = jwt.decode(
+            claims = jwt.decode(
                 token,
                 key=jwk_key,
                 algorithms=list(settings.jwt_algorithms),
+                audience=settings.jwt_audience,
                 issuer=settings.jwt_issuer,
-                options={
-                    "verify_aud": False,
-                    **options,
-                },
-                )
-            except Exception as e:
-                print("JWT decode failed:", type(e).__name__, str(e))
-                raise
+                options=options or None,
+            )
 
         else:
             # Old path (HS256 or manually-provided key)
+            if not settings.jwt_public_key:
+                raise InvalidAuthenticationError(
+                    "Server misconfigured: JWT_JWKS_URL and JWT_PUBLIC_KEY are both unset"
+                )
             claims = jwt.decode(
                 token,
                 key=settings.jwt_public_key,

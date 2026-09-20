@@ -37,9 +37,11 @@ class Settings:
         "https://sgen-cape.bigsigma.tech/realms/sgen-test/protocol/openid-connect/certs",
     )
 
-    # Public key for RS256 verification.
-    # Public Key = Secret Key in HS256
-    jwt_public_key: str = _env("JWT_PUBLIC_KEY", "public_key")
+    # Public key for RS256 verification (Public Key = Secret Key in HS256).
+    # No insecure default here: if JWT_JWKS_URL is ever unset, auth.py's
+    # legacy HS256 fallback path checks jwt_public_key itself and refuses to
+    # verify tokens rather than silently trusting a guessable constant.
+    jwt_public_key: str | None = os.getenv("JWT_PUBLIC_KEY")
 
     # Optional: small clock skew leeway (seconds) for exp/nbf checks
     jwt_leeway_seconds: int = int(os.getenv("JWT_LEEWAY_SECONDS", "0"))
