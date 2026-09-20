@@ -63,8 +63,9 @@ Common variables:
 
 JWT verification:
 - `JWT_ISSUER`, `JWT_AUDIENCE`
-- `JWT_ALGORITHMS` (default: `HS256`)
-- `JWT_PUBLIC_KEY` (signing key / secret, depending on algorithm)
+- `JWT_ALGORITHMS` (default: `RS256`)
+- `JWT_JWKS_URL` (default: the prod Keycloak realm's JWKS endpoint; used to verify RS256 tokens)
+- `JWT_PUBLIC_KEY` (only consulted if `JWT_JWKS_URL` is unset; no default — the legacy HS256 fallback path refuses to verify tokens until this is set)
 
 
 --------------------------------------------------------------------------------
@@ -113,8 +114,7 @@ Schema Overview:
 - subject_plan
   Ties each subject with exactly one plan.
 
-(Optional, if overrides exist in your repo)
-- subject_plan_limits (or similar)
+- subject_plan_limits
   Stores subject-scoped custom limit overrides that take precedence over the base plan limits.
 
 Database Access Pattern:
@@ -124,7 +124,9 @@ Other parts of the application should not execute raw SQL directly.
 Local Development:
 - The SQLite database file is created automatically at runtime if it does not exist.
 - Database files are stored in a runtime directory and are not committed to the repository.
-- The schema is applied during initialization or test setup.
+- `get_connection()` (`app/db/connection.py`) applies the schema on every connection by
+  running `app/db/db_schema.sql` — **that file is not currently checked into this repo**,
+  so a clean clone/deploy will fail at startup until it's added.
 
 --------------------------------------------------------------------------------
 ## Running tests
